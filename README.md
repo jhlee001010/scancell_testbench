@@ -35,6 +35,7 @@ scancell_testbench/
 │     └─ stim_bins.csv    17개 bin 목차
 └─ docs/
    ├─ 7cell_vector_conversion.md   변환 규칙·핀맵·비트 배치·타이밍·주의사항 상세 정리
+   ├─ 7cell_circuit_review.md      7pin_claude.circ 핀 단위 점검 결과 + 회로 수정안
    └─ conv_acc_pinmap_v1.pdf       칩 SOP28 핀맵
 ```
 

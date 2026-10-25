@@ -28,13 +28,24 @@ import types
 # scan7_hw 의 설정값(체인 순서, 핀 번호, 반전 등)은 bind() 로 나중에 받아 온다.
 # (scan7_hw 는 import 하는 순간 Jetson.GPIO 를 찾으므로, 가짜 모듈을 먼저 설치한 뒤에 불러야 한다)
 CHAIN = PIN_CLK = PIN_RST = PIN_UPD = PIN_CAP = CAP_LEVEL_CAPTURE = INVERT = None
+TX_INV = RX_INV = RST_CLEARS = 0
+CAPTURE_WIRED = ()
 
 
 def bind(hw):
-    """scan7_hw 모듈의 설정을 이 파일의 전역 변수로 복사하고 가상 보드를 새로 만든다."""
+    """scan7_hw 모듈의 설정을 이 파일의 전역 변수로 복사하고 가상 보드를 새로 만든다.
+
+    가상 보드는 scan7_hw 의 설정을 "실제 회로 사실" 로 받아들여 그대로 흉내 낸다:
+      INVERT / SCAN_*_INVERT : 74HC14 1단 반전
+      RST_CLEARS_SCAN        : RST 넷이 74273 /MR 에도 연결 → RST=0 이면 모든 셀 0
+      CAPTURE_WIRED          : 74157 B 입력이 칩 핀에 연결된 셀 (나머지는 비어 있어 0 으로 읽힘)
+    """
     global CHAIN, PIN_CLK, PIN_RST, PIN_UPD, PIN_CAP, CAP_LEVEL_CAPTURE, INVERT, BOARD
+    global TX_INV, RX_INV, RST_CLEARS, CAPTURE_WIRED
     CHAIN, INVERT, CAP_LEVEL_CAPTURE = hw.CHAIN, hw.INVERT, hw.CAP_LEVEL_CAPTURE
     PIN_CLK, PIN_RST, PIN_UPD, PIN_CAP = hw.PIN_CLK, hw.PIN_RST, hw.PIN_UPD, hw.PIN_CAP
+    TX_INV, RX_INV = int(hw.SCAN_TX_INVERT), int(hw.SCAN_RX_INVERT)
+    RST_CLEARS, CAPTURE_WIRED = bool(hw.RST_CLEARS_SCAN), tuple(hw.CAPTURE_WIRED)
     BOARD = Board()
     return BOARD
 
@@ -61,8 +72,10 @@ class ReplayChip:
         idx = self.order[self.pos]
         v = self.data[idx]
         want = (v >> 3 & 1, v >> 2 & 1, v >> 1 & 1, v & 1)
-        if (rstn, ssn, sclk, mosi) != want:
-            self.input_mismatch.append((idx, want, (rstn, ssn, sclk, mosi)))
+        got = (rstn, ssn, sclk, mosi)
+        # 리셋 중(rstn=0)에는 칩이 ssn/sclk/mosi 를 보지 않으므로 rstn 만 비교한다
+        if (got != want) if want[0] else (rstn != 0):
+            self.input_mismatch.append((idx, want, got))
         self.miso = (v >> 6) & 1
         self.done = (v >> 4) & 1
         if idx == self.fault_miso:
@@ -85,8 +98,18 @@ class Board:
     def logic(self, name, pin):
         return self.gpio.get(pin, 0) ^ (1 if INVERT[name] else 0)
 
+    def clear_if_reset(self):
+        """RST 가 74273 /MR 에도 연결된 회로: RST=0 이면 모든 셀이 0 (비동기 클리어)."""
+        if RST_CLEARS and self.logic("RST", PIN_RST) == 0:
+            self.shift_ff = [0] * len(CHAIN)
+            self.upd_ff = [0] * len(CHAIN)
+
+    def capture_input(self, cell_name):
+        """CAPTURE 때 셀이 읽는 값: 74157 B 가 칩 핀에 연결된 셀만 핀 값, 나머지는 빈 입력(0)."""
+        return self.pin_value(cell_name) if cell_name in CAPTURE_WIRED else 0
+
     def pin_value(self, cell_name):
-        """CAPTURE 때 셀이 읽는 '칩 핀 노드' 값."""
+        """칩 핀 노드 값."""
         if cell_name == "CK":
             return self.logic("CLK", PIN_CLK)
         if cell_name == "RST":
@@ -101,9 +124,11 @@ class Board:
         return self.upd_ff[CHAIN.index(cell_name)]
 
     def on_gpio(self, pin, old, new):
-        """GPIO 가 바뀔 때 보드 반응: UPDATE 상승, CK 상승."""
+        """GPIO 가 바뀔 때 보드 반응: RST 클리어, UPDATE 상승, CK 상승."""
+        self.clear_if_reset()
         if pin == PIN_UPD and self.logic("UPD", pin) == 1 and (old ^ (1 if INVERT["UPD"] else 0)) == 0:
             self.upd_ff = list(self.shift_ff)                 # shift FF → update FF
+            self.clear_if_reset()
         if pin == PIN_CLK and self.logic("CLK", pin) == 1 and (old ^ (1 if INVERT["CLK"] else 0)) == 0:
             if self.chip is not None:
                 u = {n: self.pin_value(n) for n in ("SS", "SCK", "MOSI")}
@@ -114,11 +139,13 @@ class Board:
         capture = self.logic("CAP", PIN_CAP) == CAP_LEVEL_CAPTURE
         rx = 0
         for b in range(7, -1, -1):
-            rx = (rx << 1) | self.shift_ff[-1]                # mode 0: 상승 에지 직전 값 샘플
+            rx = (rx << 1) | (self.shift_ff[-1] ^ RX_INV)     # mode 0: 상승 에지 직전 값 샘플
             if capture:
-                self.shift_ff = [self.pin_value(n) for n in CHAIN]
+                self.shift_ff = [self.capture_input(n) for n in CHAIN]
             else:
-                self.shift_ff = [(tx >> b) & 1] + self.shift_ff[:-1]
+                bit = ((tx >> b) & 1) ^ TX_INV                # MOSI 경로 74HC14 반전
+                self.shift_ff = [bit] + self.shift_ff[:-1]
+            self.clear_if_reset()                             # /MR 이 Low 면 시프트해도 바로 지워짐
         return rx
 
 

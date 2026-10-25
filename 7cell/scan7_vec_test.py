@@ -47,7 +47,7 @@ import sys
 import time
 
 import scan7_hw
-from scan7_hw import Scan7, DRIVEN, CHIP_PIN, tx_bit, rx_bit
+from scan7_hw import Scan7, DRIVEN, CHIP_PIN, CAPTURE_WIRED, RST_CLEARS_SCAN, tx_bit, rx_bit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -97,6 +97,9 @@ def parse_bin_list(text, all_ids):
 TX_SS, TX_SCK, TX_MOSI = tx_bit("SS"), tx_bit("SCK"), tx_bit("MOSI")
 TX_DONE, TX_MISO = tx_bit("DONE"), tx_bit("MISO")
 RX_DONE, RX_MISO = rx_bit("DONE"), rx_bit("MISO")
+
+# 되읽기 검사 대상: 구동 셀 중 캡처 입력(74157 B)이 칩 핀에 연결된 것만
+READBACK = tuple(n for n in DRIVEN if n in CAPTURE_WIRED)
 
 
 def convert(v):
@@ -179,8 +182,11 @@ def run_bin(hw, data, br, args, log):
         br.miso_err += bad_miso
         br.done_err += bad_done
 
-        # 구동 핀 되읽기: SS/SCK/MOSI 셀은 방금 우리가 낸 값이 그대로 캡처되어야 한다
-        pin_bad = [n for n in DRIVEN if ((rx >> rx_bit(n)) & 1) != ((tx >> tx_bit(n)) & 1)]
+        # 구동 핀 되읽기: 방금 우리가 낸 값이 그대로 캡처되어야 한다 (캡처 입력이 연결된 셀만)
+        # RST 가 셀을 지우는 회로라면, 리셋 중(rstn=0)에는 셀이 0 이라 비교하지 않는다
+        pin_bad = []
+        if not (RST_CLEARS_SCAN and not (v >> 3) & 1):
+            pin_bad = [n for n in READBACK if ((rx >> rx_bit(n)) & 1) != ((tx >> tx_bit(n)) & 1)]
         if pin_bad:
             br.pin_err += 1
 
@@ -203,11 +209,19 @@ def run_bin(hw, data, br, args, log):
         if args.follow and prev_v is not None:
             tx |= output_mirror(prev_v)        # 지금 칩 출력 핀에 걸린 값(직전 벡터 결과)과 같게
 
-        rx = hw.shift(tx)                      # ① 새 입력 넣기 + 직전 벡터 결과 꺼내기
+        if RST_CLEARS_SCAN and rstn:
+            # RST 가 셀(74273 /MR)도 지우는 회로: RST=0 인 동안은 SHIFT 해도 셀이 0 으로 지워진다.
+            # → 리셋을 푸는 벡터는 RST 를 먼저 올린 뒤에 SHIFT 해야 새 값이 셀에 남는다.
+            hw.set_rst(1)                      # ② RST 해제 (먼저)
+            rx = hw.shift(tx)                  # ① 새 입력 넣기 + 직전 벡터 결과 꺼내기
+        else:
+            # 리셋을 거는 벡터는 반대로, SHIFT 로 직전 벡터 결과를 먼저 꺼낸 뒤 RST 를 내린다
+            # (먼저 내리면 직전 결과가 지워짐). /MR 이 분리된 회로는 항상 이 순서.
+            rx = hw.shift(tx)                  # ① 새 입력 넣기 + 직전 벡터 결과 꺼내기
+            hw.set_rst(rstn)                   # ② RST 직결 (바뀔 때만 실제 GPIO 호출)
         if pending is not None:
             judge(pending, rx)
 
-        hw.set_rst(rstn)                       # ② RST 직결 (바뀔 때만 실제 GPIO 호출)
         hw.update()                            # ③ SS/SCK/MOSI 를 칩 핀에 반영
         hw.clock()                             # ④ 칩 i_clk 1사이클
         hw.capture()                           # ⑤ MISO/DONE (+ 구동 핀) 을 셀에 저장
@@ -261,9 +275,12 @@ def main():
     print("#" * 78)
     print("# MyChip_FP_MAC  scan7 vector test   chip={}   bins={}   vectors={:,}".format(
         args.chip, ",".join(str(b[0]) for b in todo), n_vec))
-    print("# vec={}  SPI={} Hz  follow={}  CAP_LEVEL_CAPTURE={}  INVERT={}".format(
+    print("# vec={}  SPI={} Hz  follow={}  CAP_LEVEL_CAPTURE={}  INVERT={}  TX/RX_INV={}/{}".format(
         os.path.relpath(vec_path), args.speed or scan7_hw.SPI_SPEED_HZ, args.follow,
-        scan7_hw.CAP_LEVEL_CAPTURE, {k: int(v) for k, v in scan7_hw.INVERT.items()}))
+        scan7_hw.CAP_LEVEL_CAPTURE, {k: int(v) for k, v in scan7_hw.INVERT.items()},
+        int(scan7_hw.SCAN_TX_INVERT), int(scan7_hw.SCAN_RX_INVERT)))
+    print("# RST_CLEARS_SCAN={}  되읽기 검사 셀={}".format(
+        RST_CLEARS_SCAN, ",".join(READBACK) if READBACK else "없음 (구동 셀 캡처 입력 미연결)"))
     print("#" * 78)
 
     results = []

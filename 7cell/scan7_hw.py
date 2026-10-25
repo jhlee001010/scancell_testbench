@@ -72,25 +72,39 @@ PIN_RST = 27        # 칩 RST (26번) 직결. Active-Low (0 = 리셋)
 PIN_UPD = 22        # 스캔셀 UPDATE.      0→1→0 펄스로 shift FF → update FF
 PIN_CAP = 23        # 스캔셀 CAPTURE/SHIFT 선택
 
-# PIN_CAP 에 어떤 레벨을 줘야 "CAPTURE" 인가?
-#   74157 의 S=0 이면 A 입력, S=1 이면 B 입력을 고른다.
-#   - A 에 앞 셀 출력(시프트), B 에 칩 핀(캡처)을 연결했다면 CAPTURE = 1
-#   - A 에 칩 핀(캡처),       B 에 앞 셀 출력(시프트)을 연결했다면 CAPTURE = 0
-#   GPIO 표에 G23 이 "CAPTURE 모드" 로 적혀 있어 HIGH = CAPTURE 로 가정했다.
-#   selftest [2] 체인 길이가 0 이나 엉뚱한 값이면 가장 먼저 이 값을 바꿔 본다.
+# ※ 아래 값들은 scancell(7pin)/7pin_claude.circ 를 핀 단위로 추적한 결과에 맞춘 것이다
+#   (docs/7cell_circuit_review.md). 회로를 바꾸면 이 블록을 같이 고친다.
+
+# "CAPTURE" 일 때 74157 S 핀의 논리 레벨 (S 핀 기준. GPIO 레벨은 INVERT["CAP"] 가 처리)
+#   74157 은 S=0 이면 A, S=1 이면 B 를 고른다.
+#   회로: A = 앞 셀 Q (시프트), B = 칩 핀 (캡처)  →  CAPTURE 는 S=1
 CAP_LEVEL_CAPTURE = 1
 
 # ─── 74HC14(반전 슈미트 버퍼) 를 홀수 번 거치는 신호는 True ─────────────────
 # 신호가 74HC14 를 2번 거치면 반전이 상쇄되어 False, 1번만 거치면 True.
 # True 로 두면 이 파일이 GPIO 에 "반대 레벨" 을 내보내서 칩/보드 쪽에서는 원래 값이 된다.
+# 회로: 아래 다섯 신호 모두 74HC14 게이트 1개 → 74HC245 를 거친다 (반전 1번)
 INVERT = {
-    "CLK": False,   # GPIO17 → 칩 CK
-    "RST": False,   # GPIO27 → 칩 RST
-    "UPD": False,   # GPIO22 → 74273(update) CP
-    "CAP": False,   # GPIO23 → 74157 S
+    "CLK": True,    # GPIO17 → 74HC14 6A/6Y → 245 A1→B1 → 칩 CK
+    "RST": True,    # GPIO27 → 74HC14 5A/5Y → 245 A2→B2 → 칩 RST + 74273 ×2 /MR
+    "UPD": True,    # GPIO22 → 74HC14 4A/4Y → 245 A3→B3 → 74273 CP
+    "CAP": True,    # GPIO23 → 74HC14 1A/1Y → 245 A4→B4 → 74157 ×2 S
 }
-SCAN_TX_INVERT = False   # Jetson MOSI → 셀1 경로가 반전되면 True (TX 바이트 전체 반전)
-SCAN_RX_INVERT = False   # 셀7 → Jetson MISO 경로가 반전되면 True (RX 바이트 전체 반전)
+SCAN_TX_INVERT = True    # Jetson MOSI → 74HC14 6A/6Y → 245 A5→B5 → 셀1 (반전 1번)
+SCAN_RX_INVERT = False   # 셀 마지막 Q → 74245(A1→B1) → Jetson MISO (반전 없음)
+
+# ─── 회로 특성 ──────────────────────────────────────────────────────────────
+# RST 넷이 74273 의 /MR(클리어) 에도 연결되어 있으면 True.
+#   True 이면 RST=0 인 동안 모든 셀(shift/update FF)이 0 으로 지워진다.
+#   → 벡터 재생 때 RST 를 올리는 벡터는 "RST 먼저 → SHIFT", 내리는 벡터는 "SHIFT 먼저 → RST" 로 순서를 바꾼다.
+#   → 리셋 중에는 칩 SS 핀도 0 이 된다 (원래 벡터는 SS=1). 회로에서 /MR 을 분리하는 것을 권장.
+RST_CLEARS_SCAN = True
+
+# 캡처 입력(74157 B)이 칩 핀에 실제로 연결된 셀.
+#   여기에 없는 셀은 B 가 비어 있어서 CAPTURE 해도 의미 없는 값이 들어온다.
+#   - 구동 셀(SS/SCK/MOSI)이 여기 있으면 "구동한 값 되읽기" 로 배선/접촉을 검사한다.
+#   - DONE 은 원래 설계(7셀)대로 넣어 두었다. 현재 회로는 DONE 셀이 빠져 있어 회로 수정이 필요.
+CAPTURE_WIRED = ("DONE", "MISO")
 
 # ─── SPI ────────────────────────────────────────────────────────────────────
 SPI_BUS = 0              # /dev/spidev0.0  (헤더 19/21/23/24번 = Pi Wedge 의 MOSI/MISO/SCLK/CE0)
@@ -199,7 +213,9 @@ class Scan7:
             self._out("RST", 0)    # 끝나면 칩을 리셋에 묶어 둔다 (안전)
         finally:
             self.spi.close()
-            GPIO.cleanup()         # 모든 핀을 입력으로 되돌림 → 보드 풀다운이 Low 유지
+            GPIO.cleanup()         # 모든 핀을 입력으로 되돌림
+            # 주의: GPIO 가 입력(풀다운 Low)이 되면 74HC14 1단 반전 때문에 칩 RST 는 High(리셋 해제)가 된다.
+            #       부팅·종료 후에도 칩을 리셋에 묶어 두려면 GPIO27 쪽을 풀업으로 바꾸거나 반전을 2단으로.
 
     def __enter__(self):
         return self

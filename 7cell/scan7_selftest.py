@@ -14,16 +14,21 @@ scan7_selftest.py  —  7핀 스캔셀 보드 자체 점검 (칩 테스트 전�
                       → scan7_hw.py 의 TX/RX 비트 대응표가 실제 보드와 같은지 확인
   [3] 구동/캡처     : SS/SCK/MOSI 셀에 walking-1, walking-0 → UPDATE → CAPTURE → 되읽기
                       → update FF, mux 의 캡처 입력, UPDATE/CAPTURE 신호 확인
+                      (scan7_hw.CAPTURE_WIRED 에 있는 셀만. 캡처 입력이 비어 있으면 건너뜀)
   [4] 직결 신호     : GPIO17(CK), GPIO27(RST) 를 바꾸고 CK/RST 셀로 캡처
-                      → 바이패스 셀이 칩 핀을 읽는 구조라면 직결선까지 확인 (아니면 참고용)
-  [5] 칩 리셋 출력  : (--chip) 리셋 중 SS=1 상태에서 DONE=0, MISO=0 인지
+                      → 바이패스 셀의 캡처 입력이 칩 핀에 연결된 경우만 (아니면 건너뜀)
+  [5] 칩 리셋 출력  : (--chip) 리셋 직후 DONE=0, MISO=0 인지
+
+RST_CLEARS_SCAN=True (RST 가 74273 /MR 에도 연결된 회로) 이면 RST=0 동안 셀이 지워지므로
+[1]~[4] 는 RST=1 (칩 리셋 해제) 상태에서 한다. 칩 CK 를 치지 않으므로 칩 상태는 변하지 않는다.
 
 모든 단계가 OK 여야 scan7_vec_test.py 로 넘어간다.
 """
 import argparse
 import random
 
-from scan7_hw import Scan7, N_CELLS, DRIVEN, BYPASS, CHIP_PIN, tx_bit, rx_bit
+from scan7_hw import (Scan7, N_CELLS, DRIVEN, BYPASS, CHIP_PIN, CAPTURE_WIRED,
+                      RST_CLEARS_SCAN, tx_bit, rx_bit)
 
 
 def bits(b):
@@ -57,7 +62,10 @@ def main():
 
     fails = 0
     with Scan7(speed_hz=a.speed) as hw:
-        hw.set_rst(0)                 # 점검 내내 칩은 리셋 상태로 둔다 (칩이 있어도 안전)
+        # 점검 중 칩 리셋 상태:
+        #   보통은 RST=0 (리셋) 으로 묶어 둔다 (칩이 있어도 안전).
+        #   RST 가 셀도 지우는 회로면 RST=0 동안 체인이 동작하지 않으므로 RST=1 로 둔다.
+        hw.set_rst(1 if RST_CLEARS_SCAN else 0)
 
         # ─────────────────────────────────────────────────────────────────
         print("[1] 체인 길이")
@@ -90,14 +98,19 @@ def main():
         print("    {}개 패턴 중 {}개 불일치  {}".format(len(pats), bad, "OK" if not bad else "FAIL"))
 
         # ─────────────────────────────────────────────────────────────────
-        print("[3] 구동 → 캡처 되읽기 (셀: {})".format(", ".join(DRIVEN)))
+        rb = [n for n in DRIVEN if n in CAPTURE_WIRED]     # 되읽기 가능한 구동 셀
+        print("[3] 구동 → 캡처 되읽기 (셀: {})".format(", ".join(rb) if rb else "없음"))
         # walking-1 : 구동 셀 하나만 1,  walking-0 : 하나만 0
         vecs = []
-        for name in DRIVEN:
-            vecs.append({n_: int(n_ == name) for n_ in DRIVEN})
-            vecs.append({n_: int(n_ != name) for n_ in DRIVEN})
-        vecs.append({n_: 0 for n_ in DRIVEN})
-        vecs.append({n_: 1 for n_ in DRIVEN})
+        for name in rb:
+            vecs.append({n_: int(n_ == name) for n_ in rb})
+            vecs.append({n_: int(n_ != name) for n_ in rb})
+        if rb:
+            vecs.append({n_: 0 for n_ in rb})
+            vecs.append({n_: 1 for n_ in rb})
+        else:
+            print("    건너뜀: 구동 셀(SS/SCK/MOSI)의 74157 B 입력이 칩 핀에 연결되어 있지 않음")
+            print("           → UPDATE 경로는 칩을 꽂고 scan7_vec_test.py --bins 0,1 로 확인")
         bad_cells = set()
         for v in vecs:
             tx = 0
@@ -113,7 +126,8 @@ def main():
                     bad_cells.add(name)
                     print("    FAIL {:<4}(칩 {}번) 구동 {} → 캡처 {}".format(name, CHIP_PIN[name], val, got))
         fails += bool(bad_cells)
-        print("    {}".format("OK" if not bad_cells else "FAIL 셀: " + ", ".join(sorted(bad_cells))))
+        if rb:
+            print("    {}".format("OK" if not bad_cells else "FAIL 셀: " + ", ".join(sorted(bad_cells))))
         if bad_cells:
             print("    - 모든 셀 FAIL: UPDATE(GPIO22) 또는 CAPTURE(GPIO23) 신호/극성 확인")
             print("    - 일부 셀 FAIL: 그 셀의 update FF 출력 → 소켓 핀 → mux 캡처 입력 배선 확인")
@@ -121,7 +135,12 @@ def main():
         # ─────────────────────────────────────────────────────────────────
         print("[4] 직결 신호 (GPIO17 → CK 28번, GPIO27 → RST 26번)  ※ 참고용")
         # RST 를 1 로 올리는 순간 칩이 리셋에서 풀린다. 칩이 있어도 CK 를 치지 않으므로 상태 변화 없음.
-        for name, setter in (("CK", hw.set_clk), ("RST", hw.set_rst)):
+        checks = [(n, s_) for n, s_ in (("CK", hw.set_clk), ("RST", hw.set_rst)) if n in CAPTURE_WIRED]
+        if RST_CLEARS_SCAN:
+            checks = [c for c in checks if c[0] != "RST"]   # RST=0 이면 셀이 지워져 캡처 자체가 불가
+        if not checks:
+            print("    건너뜀: CK/RST 셀의 캡처 입력이 칩 핀에 연결되어 있지 않음 → 멀티미터/LED 로 확인")
+        for name, setter in checks:
             seen = []
             for level in (0, 1, 0):
                 setter(level)
@@ -133,14 +152,22 @@ def main():
                 name, " ".join("{}/{}".format(l, g) for l, g in seen),
                 "OK" if ok4 else "불일치 (바이패스 셀이 핀을 안 읽는 구조면 정상 — 멀티미터로 확인)"))
         hw.set_clk(0)
-        hw.set_rst(0)
+        hw.set_rst(1 if RST_CLEARS_SCAN else 0)
 
         # ─────────────────────────────────────────────────────────────────
         if a.chip:
-            print("[5] 칩 리셋 중 출력 (RST=0, SS=1)")
-            hw.shift(1 << tx_bit("SS"))             # SS=1 (비선택), SCK=0, MOSI=0
-            hw.update()
-            hw.clock()                              # 리셋 중 클럭 1번 (벡터 0 과 같은 상황)
+            if RST_CLEARS_SCAN:
+                # 리셋 중에는 셀도 지워져 캡처가 안 되므로, 리셋 펄스 후 RST=1 에서 (클럭 없이) 캡처
+                print("[5] 칩 리셋 직후 출력 (RST 0→1, 클럭 없음)")
+                hw.set_rst(0)
+                hw.set_rst(1)
+                hw.shift(1 << tx_bit("SS"))         # SS=1 (비선택)
+                hw.update()
+            else:
+                print("[5] 칩 리셋 중 출력 (RST=0, SS=1)")
+                hw.shift(1 << tx_bit("SS"))         # SS=1 (비선택), SCK=0, MOSI=0
+                hw.update()
+                hw.clock()                          # 리셋 중 클럭 1번 (벡터 0 과 같은 상황)
             hw.capture()
             rx = hw.shift(0x00)
             done = (rx >> rx_bit("DONE")) & 1

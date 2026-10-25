@@ -235,13 +235,18 @@ FAKE_FAULT_PIN=SCK python dryrun/run_dryrun.py selftest
 
 ---
 
-## 9. 아직 실물로 확인 안 된 가정
+## 9. 회로 점검 결과와 남은 일
 
-| 가정 | 확인 방법 |
+`scancell(7pin)/7pin_claude.circ` 를 핀 단위로 추적한 결과는 [`docs/7cell_circuit_review.md`](../docs/7cell_circuit_review.md) 에 있습니다.
+요약:
+
+| 항목 | 상태 |
 |---|---|
-| G23 HIGH = CAPTURE | selftest [1] |
-| 스캔 경로·제어선에 74HC14 반전 없음 (또는 2단) | selftest [2], [3] |
-| 셀1 = CK 가 Jetson MOSI 쪽 | selftest [2] + 칩 bin 0~1 |
-| G27 이 74273 MR̅(스캔셀 클리어)과 분리되어 칩 RST 에만 연결 | 회로 확인 — 같이 묶여 있으면 리셋 해제 순간 SS 가 0→1 로 올라가 명령이 잘못 실행될 수 있음 |
-| DONE/MISO 셀이 칩 핀을 구동하지 않음 (또는 저항 경유) | 회로 확인 — 저항 없이 직접 구동하면 칩 출력과 충돌 |
-| Python 3.6 (JetPack 4) 에서 동작 | Jetson 에서 첫 실행 (3.6 에 없는 문법은 쓰지 않음) |
+| 셀 순서 (CK·MOSI·RST·SCK·SS·…·MISO), 칩 핀 대응 | ✅ 의도와 일치 |
+| 74HC14 1단 반전 (CLK/RST/UPD/CAP/MOSI), CAPTURE = S=1 | ✅ 코드에 반영 |
+| RST 가 74273 /MR 도 지움 | ✅ 재생 순서로 우회 (`RST_CLEARS_SCAN`), 분리 권장 |
+| 구동 셀 캡처 입력 비어 있음 | ✅ 되읽기 검사 건너뜀 (`CAPTURE_WIRED`) |
+| **Jetson SCLK 미연결, shift FF CP 가 UPDATE 에 붙음** | 🔧 회로 수정 필수 |
+| **DONE 셀 없음 (체인 6셀)** | 🔧 회로 수정 필수 — 지금 회로로는 selftest [1] 이 `6 / 7 FAIL` |
+| 74245 GND·74273 전원·74157 /E | 🔧 회로 수정 |
+| Python 3.6 (JetPack 4) 에서 동작 | 젯슨 첫 실행 때 확인 |
