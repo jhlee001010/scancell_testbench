@@ -64,7 +64,7 @@ sudo modprobe spidev && ls /dev/spidev*       # /dev/spidev0.0 이 보여야 함
 sudo pip3 install spidev Jetson.GPIO
 ```
 
-저장소를 Jetson 에 클론합니다 (private 저장소라 GitHub 로그인 필요 — 토큰 또는 `gh auth login`).
+저장소를 Jetson 에 클론합니다 (공개 저장소라 로그인 없이 클론 가능).
 
 ```bash
 git clone https://github.com/jhlee001010/scancell_testbench.git ~/scancell_testbench
