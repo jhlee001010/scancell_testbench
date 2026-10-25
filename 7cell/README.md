@@ -74,7 +74,7 @@ git clone https://github.com/jhlee001010/scancell_testbench.git ~/scancell_testb
 cd ~/scancell_testbench/7cell
 ```
 
-Jetson 에서 GitHub 로그인이 번거로우면 PC 에서 폴더째 복사해도 됩니다.
+Jetson 이 인터넷에 연결되어 있지 않으면 PC 에서 폴더째 복사해도 됩니다.
 
 ```bash
 scp -r scancell_testbench nano@<젯슨IP>:~/
