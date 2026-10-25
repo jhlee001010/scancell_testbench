@@ -1,0 +1,5 @@
+# 줄바꿈은 LF 로 통일 (Jetson 에서 shebang / 쉘 스크립트가 깨지지 않게)
+* text=auto eol=lf
+# 테스트 벡터는 이진 파일 — 줄바꿈 변환 금지
+*.bin binary
+*.pdf binary
