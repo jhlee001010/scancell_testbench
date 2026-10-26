@@ -23,6 +23,7 @@ fake_board.py  —  PC 에서 하드웨어 없이 돌려 보기 위한 가짜 Je
   FAKE_NO_CHIP=1       : 소켓 비움 (출력 핀 = 0). selftest 용
 """
 import os
+import random
 import types
 
 # scan7_hw 의 설정값(체인 순서, 핀 번호, 반전 등)은 bind() 로 나중에 받아 온다.
@@ -89,8 +90,10 @@ class ReplayChip:
 class Board:
     def __init__(self):
         self.gpio = {}                    # BCM 핀 → 물리 레벨
-        self.shift_ff = [0] * len(CHAIN)  # 셀1..7 의 shift FF (index 0 = 셀1)
-        self.upd_ff = [0] * len(CHAIN)    # 셀1..7 의 update FF
+        # 전원 직후 FF 값: /MR 이 없으면(5V 고정) 아무 값 → 무작위로 시작해 safe_state() 를 검증
+        rnd = (lambda: random.getrandbits(1)) if not RST_CLEARS else (lambda: 0)
+        self.shift_ff = [rnd() for _ in CHAIN]  # 셀1..7 의 shift FF (index 0 = 셀1)
+        self.upd_ff = [rnd() for _ in CHAIN]    # 셀1..7 의 update FF
         self.chip = None                  # ReplayChip 또는 None (소켓 비움)
         self.broken_pin = os.environ.get("FAKE_FAULT_PIN")
 

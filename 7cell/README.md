@@ -244,9 +244,9 @@ FAKE_FAULT_PIN=SCK python dryrun/run_dryrun.py selftest
 |---|---|
 | 셀 순서 (CK·MOSI·RST·SCK·SS·…·MISO), 칩 핀 대응 | ✅ 의도와 일치 |
 | 74HC14 1단 반전 (CLK/RST/UPD/CAP/MOSI), CAPTURE = S=1 | ✅ 코드에 반영 |
-| RST 가 74273 /MR 도 지움 | ✅ 재생 순서로 우회 (`RST_CLEARS_SCAN`), 분리 권장 |
+| RST 가 74273 /MR 도 지움 | ✅ 2026-10-26 회로 수정 (/MR → 5V), `RST_CLEARS_SCAN=False` + 시작 시 `safe_state()` |
 | 구동 셀 캡처 입력 비어 있음 | ✅ 되읽기 검사 건너뜀 (`CAPTURE_WIRED`) |
-| **Jetson SCLK 미연결, shift FF CP 가 UPDATE 에 붙음** | 🔧 회로 수정 필수 |
-| **DONE 셀 없음 (체인 6셀)** | 🔧 회로 수정 필수 — 지금 회로로는 selftest [1] 이 `6 / 7 FAIL` |
-| 74245 GND·74273 전원·74157 /E | 🔧 회로 수정 |
+| Jetson SCLK → shift FF CP | ✅ 실제 보드는 연결됨 (회로 파일만 누락) |
+| DONE 셀 (체인 7셀) | 회로 파일엔 없었음 — 실제 보드는 selftest [1] 체인 길이 7 로 확인 |
+| 74245 GND·74273 전원·74157 /E | 회로 파일 기준 문제 — 실제 보드 확인 |
 | Python 3.6 (JetPack 4) 에서 동작 | 젯슨 첫 실행 때 확인 |

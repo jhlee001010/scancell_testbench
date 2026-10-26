@@ -94,16 +94,18 @@ SCAN_TX_INVERT = True    # Jetson MOSI → 74HC14 6A/6Y → 245 A5→B5 → 셀1
 SCAN_RX_INVERT = False   # 셀 마지막 Q → 74245(A1→B1) → Jetson MISO (반전 없음)
 
 # ─── 회로 특성 ──────────────────────────────────────────────────────────────
-# RST 넷이 74273 의 /MR(클리어) 에도 연결되어 있으면 True.
+# RST 넷이 74273 의 /MR(= nCLR, 1번 핀) 에도 연결되어 있으면 True.
 #   True 이면 RST=0 인 동안 모든 셀(shift/update FF)이 0 으로 지워진다.
 #   → 벡터 재생 때 RST 를 올리는 벡터는 "RST 먼저 → SHIFT", 내리는 벡터는 "SHIFT 먼저 → RST" 로 순서를 바꾼다.
-#   → 리셋 중에는 칩 SS 핀도 0 이 된다 (원래 벡터는 SS=1). 회로에서 /MR 을 분리하는 것을 권장.
-RST_CLEARS_SCAN = True
+#   → 리셋 중에는 칩 SS 핀도 0 이 된다 (원래 벡터는 SS=1).
+# 2026-10-26 회로 수정: 74273 ×2 의 /MR 을 칩 RST 에서 떼고 5V 고정 → False
+#   (FF 는 리셋 없이 동작. 전원 직후 값은 Scan7() 시작 때 안전값으로 덮어쓴다)
+RST_CLEARS_SCAN = False
 
 # 캡처 입력(74157 B)이 칩 핀에 실제로 연결된 셀.
 #   여기에 없는 셀은 B 가 비어 있어서 CAPTURE 해도 의미 없는 값이 들어온다.
 #   - 구동 셀(SS/SCK/MOSI)이 여기 있으면 "구동한 값 되읽기" 로 배선/접촉을 검사한다.
-#   - DONE 은 원래 설계(7셀)대로 넣어 두었다. 현재 회로는 DONE 셀이 빠져 있어 회로 수정이 필요.
+#   - DONE 은 7셀 설계대로 넣어 두었다 (7pin_claude.circ 에는 DONE 셀이 빠져 있었음 — 실제 보드 확인).
 CAPTURE_WIRED = ("DONE", "MISO")
 
 # ─── SPI ────────────────────────────────────────────────────────────────────
@@ -183,6 +185,19 @@ class Scan7:
         self.spi.max_speed_hz = speed_hz or SPI_SPEED_HZ
         self.spi.mode = SPI_MODE
         # 스캔체인은 CS 를 쓰지 않지만, spidev 가 CE0 을 토글해도 해가 없다.
+
+        # ── 안전한 시작 상태 ──
+        # 74273 에 리셋(/MR)이 없으면 전원 직후 shift/update FF 에 아무 값이나 들어 있다.
+        # → 칩을 리셋에 묶어 둔 채(RST=0) "SS=1(비선택), SCK=0, MOSI=0" 을 넣고 UPDATE 해서
+        #   칩 입력 핀을 정해진 값으로 만든 뒤 테스트를 시작한다.
+        self.safe_state()
+
+    def safe_state(self):
+        """칩 리셋 유지 + 칩 입력 핀 = SS 1, SCK 0, MOSI 0 (나머지 셀 0)."""
+        self._out("CLK", 0)
+        self._out("RST", 0)
+        self.shift(1 << tx_bit("SS"))     # 체인 길이 7 < 8 이라 1바이트면 모든 셀이 새 값으로 바뀜
+        self.update()
 
     # ── 내부: GPIO 핀 설정과 출력 ────────────────────────────────────────────
     def _setup(self, name, pin, level):
