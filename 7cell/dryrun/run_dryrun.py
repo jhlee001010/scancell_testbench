@@ -7,6 +7,7 @@ run_dryrun.py  —  젯슨/보드/칩 없이 PC 에서 테스트벤치 전체 �
   python dryrun/run_dryrun.py selftest --chip          # 칩 꽂은 상태 자가진단
   python dryrun/run_dryrun.py vec --bins 0,1           # 벡터 재생 (bin 0, 1)
   python dryrun/run_dryrun.py vec                      # 전체 183,877 벡터 (PC 에서 수십 초)
+  python dryrun/run_dryrun.py debug auto               # 진단 도구 (scan7_debug.py) 시험
 
   고장 주입 예 (PowerShell 은 $env:FAKE_FAULT_MISO=60 ; 실행 ; Remove-Item Env:FAKE_FAULT_MISO)
     FAKE_FAULT_MISO=60   python dryrun/run_dryrun.py vec --bins 0,1   → bin 1 FAIL first@60
@@ -42,11 +43,16 @@ sys.modules["spidev"] = fake_board.make_spidev_module()
 import scan7_hw                                  # noqa: E402
 board = fake_board.bind(scan7_hw)
 
-if len(sys.argv) < 2 or sys.argv[1] not in ("selftest", "vec"):
+if len(sys.argv) < 2 or sys.argv[1] not in ("selftest", "vec", "debug"):
     sys.exit(__doc__)
 mode = sys.argv[1]
 rest = sys.argv[2:]
 no_chip = os.environ.get("FAKE_NO_CHIP") == "1"
+
+if mode == "debug":
+    import scan7_debug
+    sys.argv = ["scan7_debug.py"] + rest
+    sys.exit(scan7_debug.main())
 
 if mode == "selftest":
     import scan7_selftest

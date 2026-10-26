@@ -15,6 +15,7 @@ WSL `~/test_vector` 에서 만든 **테스트 벡터 183,877개(`vectors.bin`)**
 ├─ scan7_hw.py          보드 제어 계층 (GPIO/SPI, shift·update·capture·clock)  ← 설정은 여기만 고침
 ├─ scan7_selftest.py    보드 자가진단 (칩 꽂기 전에 먼저)
 ├─ scan7_vec_test.py    전체 벡터 재생 + bin 별 판정 + 실측 로그
+├─ scan7_debug.py       체인이 안 될 때 원인 나누기 (auto / spi-loop / hold / spi-run)
 ├─ README.md            이 문서
 └─ dryrun/              PC 에서 하드웨어 없이 돌려 보기
    ├─ fake_board.py     가짜 Jetson.GPIO / spidev + 가상 스캔셀 보드 + "정답을 내는" 가상 칩
@@ -178,7 +179,7 @@ python3 vec/decode_results.py vec/stim.txt measured_chip01.txt vec/stim_marks.tx
 
 | 증상 | 원인 후보 | 고칠 설정 |
 |---|---|---|
-| selftest [1] 체인 길이 None | CAPTURE 극성 반대, MISO 선 | `CAP_LEVEL_CAPTURE` 0↔1 |
+| selftest [1] 체인 길이 None | CAPTURE 극성 반대, SPI 꺼짐, 셀에 데이터 안 들어감, MISO 선 | **`sudo python3 scan7_debug.py auto`** → spi-loop → hold (아래) |
 | selftest [1] 길이 0 | MISO 가 High 고정 | 배선 / 레벨시프터 방향 |
 | selftest [2] 전부 반전되어 나옴 | 스캔 경로에 74HC14 1단 | `SCAN_TX_INVERT` / `SCAN_RX_INVERT` |
 | selftest [3] 전부 FAIL | UPDATE 극성 / 신호 | `INVERT["UPD"]`, GPIO22 배선 |
@@ -186,6 +187,18 @@ python3 vec/decode_results.py vec/stim.txt measured_chip01.txt vec/stim_marks.tx
 | 칩 bin 0 부터 FAIL | CK/RST 반전, 칩 전원 | `INVERT["CLK"]`, `INVERT["RST"]` |
 | 체인 순서가 다름 | 셀 배선 순서 | `CHAIN` 리스트 순서 |
 | 불안정 (가끔 FAIL) | 배선 길이, 속도 | `--speed 250000`, `PULSE_S`, `SETTLE_S` |
+
+### 진단 도구 `scan7_debug.py`
+
+| 명령 | 하는 일 |
+|---|---|
+| `sudo python3 scan7_debug.py auto` | CAPTURE 극성 × 스캔 MOSI 반전 4가지 조합으로 체인 길이를 재고, 7 이 나오는 설정을 알려 줌 |
+| `sudo python3 scan7_debug.py spi-loop` | Jetson 19번↔21번 점퍼로 SPI 자체 확인 |
+| `sudo python3 scan7_debug.py hold 0x55` | 패턴을 셀에 넣고 60초 유지 → 74273 Q 핀을 멀티미터로 측정 (핀별 기대값 출력) |
+| `sudo python3 scan7_debug.py spi-run` | SPI 를 10초 계속 보냄 → 74273 CP·74157 1A 에 신호가 오는지 측정 |
+
+dryrun 에서 "보드 CAPTURE 극성이 반대" 인 경우를 넣으면 selftest 와 똑같이 `RX=00 00 00 00 / None` 이 나오고,
+`auto` 가 `CAP_LEVEL_CAPTURE = 0` 을 찾아냅니다.
 
 > 주의: **구동 셀 두 개(예: SS 와 SCK)가 서로 바뀌어 배선된 경우는 자가진단으로 잡히지 않습니다.**
 > 되읽기도 똑같이 바뀌어 나오기 때문입니다. 이 경우는 칩을 꽂고 bin 0~1 을 돌리면 FAIL 로 드러납니다.
